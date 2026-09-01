@@ -8,7 +8,8 @@
     search: "",
     privacy: false,
     editMode: false,
-    minimized: false,
+    minimized: true,
+    position: null,
     lastFocused: null
   };
 
@@ -20,6 +21,7 @@
   let statusEl;
   let previewBtn;
   let editBtn;
+  let minimizeBtn;
   let saveTimer = null;
 
   function normalizeText(value) {
@@ -130,6 +132,26 @@
         resolve(saved.length ? saved : defaultData);
       });
     });
+  }
+
+  function loadUiState() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(["jobfillPosition"], (result) => {
+        const position = result?.jobfillPosition;
+        if (
+          position &&
+          Number.isFinite(position.left) &&
+          Number.isFinite(position.top)
+        ) {
+          state.position = position;
+        }
+        resolve();
+      });
+    });
+  }
+
+  function savePosition(left, top) {
+    chrome.storage.local.set({ jobfillPosition: { left, top } });
   }
 
   function exportData() {
@@ -327,6 +349,8 @@
     statusEl.textContent = `${count} 个字段`;
     previewBtn.textContent = state.privacy ? "◧" : "◨";
     editBtn.textContent = "✎";
+    minimizeBtn.textContent = state.minimized ? "+" : "–";
+    minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     panel.classList.toggle("jobfill-hidden", state.privacy);
     panel.classList.toggle("jobfill-minimized", state.minimized);
   }
@@ -516,6 +540,8 @@
     statusEl.textContent = `编辑模式 · ${count} 个字段`;
     previewBtn.textContent = state.privacy ? "◧" : "◨";
     editBtn.textContent = "✓";
+    minimizeBtn.textContent = state.minimized ? "+" : "–";
+    minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     panel.classList.toggle("jobfill-hidden", state.privacy);
     panel.classList.toggle("jobfill-minimized", state.minimized);
   }
@@ -607,7 +633,7 @@
       flash(next);
     });
 
-    const minimizeBtn = document.createElement("button");
+    minimizeBtn = document.createElement("button");
     minimizeBtn.type = "button";
     minimizeBtn.className = "jobfill-icon-btn";
     minimizeBtn.title = "收起面板";
@@ -641,6 +667,12 @@
     panel.append(header, searchWrap, statusEl, body);
     root.appendChild(panel);
     document.documentElement.appendChild(root);
+
+    if (state.position) {
+      root.style.left = `${state.position.left}px`;
+      root.style.top = `${state.position.top}px`;
+      root.style.right = "auto";
+    }
   }
 
   function enableDragging() {
@@ -648,12 +680,15 @@
     let drag = null;
 
     header.addEventListener("pointerdown", (event) => {
-      if (event.target.closest("button, input")) return;
+      if (event.target.closest("button, input, textarea, select")) return;
+      const rect = root.getBoundingClientRect();
       drag = {
         startX: event.clientX,
         startY: event.clientY,
-        left: panel.offsetLeft,
-        top: panel.offsetTop
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height
       };
       header.setPointerCapture(event.pointerId);
       event.preventDefault();
@@ -661,15 +696,20 @@
 
     window.addEventListener("pointermove", (event) => {
       if (!drag) return;
-      const nextLeft = Math.max(8, drag.left + (event.clientX - drag.startX));
-      const nextTop = Math.max(8, drag.top + (event.clientY - drag.startY));
-      panel.style.left = `${nextLeft}px`;
-      panel.style.top = `${nextTop}px`;
-      panel.style.right = "auto";
-      panel.style.bottom = "auto";
+      const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
+      const maxTop = Math.max(8, window.innerHeight - 48);
+      const nextLeft = Math.min(maxLeft, Math.max(8, drag.left + (event.clientX - drag.startX)));
+      const nextTop = Math.min(maxTop, Math.max(8, drag.top + (event.clientY - drag.startY)));
+      root.style.left = `${nextLeft}px`;
+      root.style.top = `${nextTop}px`;
+      root.style.right = "auto";
     });
 
     window.addEventListener("pointerup", () => {
+      if (drag) {
+        const rect = root.getBoundingClientRect();
+        savePosition(Math.round(rect.left), Math.round(rect.top));
+      }
       drag = null;
     });
   }
@@ -736,6 +776,7 @@
   async function init() {
     attachListeners();
     resumeData = await loadSavedData(await injectDataScript());
+    await loadUiState();
     buildPanel();
     enableDragging();
     renderItems();
