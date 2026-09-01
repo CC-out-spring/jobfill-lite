@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "JobFill Lite",
+  "version": "0.1.0",
+  "description": "Local autofill helper for campus recruiting forms.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "JobFill"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["resume-data.js", "resume-data.example.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
