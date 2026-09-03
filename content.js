@@ -517,7 +517,7 @@
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     root.classList.toggle("jobfill-hidden", state.privacy);
-    shell.classList.toggle("jobfill-minimized", state.minimized);
+    root.classList.toggle("jobfill-minimized", state.minimized);
     saveUiState();
   }
 
@@ -710,7 +710,7 @@
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     root.classList.toggle("jobfill-hidden", state.privacy);
-    shell.classList.toggle("jobfill-minimized", state.minimized);
+    root.classList.toggle("jobfill-minimized", state.minimized);
     saveUiState();
   }
 
@@ -870,7 +870,8 @@
         left: rect.left,
         top: rect.top,
         width: rect.width,
-        height: rect.height
+        height: rect.height,
+        moved: false
       };
       dragHandle.setPointerCapture(event.pointerId);
       event.preventDefault();
@@ -878,10 +879,15 @@
 
     window.addEventListener("pointermove", (event) => {
       if (!drag) return;
+      const deltaX = event.clientX - drag.startX;
+      const deltaY = event.clientY - drag.startY;
+      if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
+        drag.moved = true;
+      }
       const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
       const maxTop = Math.max(8, window.innerHeight - 48);
-      const nextLeft = Math.min(maxLeft, Math.max(8, drag.left + (event.clientX - drag.startX)));
-      const nextTop = Math.min(maxTop, Math.max(8, drag.top + (event.clientY - drag.startY)));
+      const nextLeft = Math.min(maxLeft, Math.max(8, drag.left + deltaX));
+      const nextTop = Math.min(maxTop, Math.max(8, drag.top + deltaY));
       root.style.left = `${nextLeft}px`;
       root.style.top = `${nextTop}px`;
       root.style.right = "auto";
@@ -889,6 +895,13 @@
 
     window.addEventListener("pointerup", () => {
       if (drag) {
+        if (state.minimized && !drag.moved) {
+          state.minimized = false;
+          renderItems();
+          drag = null;
+          return;
+        }
+
         const rect = root.getBoundingClientRect();
         const isNearLeft = rect.left < 100;
         const isNearRight = window.innerWidth - rect.right < 100;
