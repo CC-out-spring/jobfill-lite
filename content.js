@@ -47,6 +47,16 @@
     ["英语", "英文", "english", "cet", "toefl", "ielts"]
   ];
 
+  const CONTEXT_ALIAS_RULES = [
+    ["本科", "本科", "学士", "大学本科", "undergraduate", "bachelor"],
+    ["硕士", "硕士", "研究生", "master", "graduate"],
+    ["博士", "博士", "phd", "doctor"],
+    ["高中", "高中", "high school"],
+    ["第一", "第一", "第1", "1st", "first"],
+    ["第二", "第二", "第2", "2nd", "second"],
+    ["第三", "第三", "第3", "3rd", "third"]
+  ];
+
   function normalizeText(value) {
     return String(value ?? "").replace(/\s+/g, " ").trim();
   }
@@ -129,12 +139,19 @@
   }
 
   function getDataItems() {
+    let order = 0;
     return resumeData.flatMap((group) =>
-      group.items.map((item) => ({
-        ...item,
-        group: group.group,
-        text: normalizeSearchText(`${group.group} ${item.label}`)
-      }))
+      group.items.map((item) => {
+        const sourceText = `${group.group} ${item.label}`;
+        return {
+          ...item,
+          group: group.group,
+          key: canonicalFieldKey(item.label),
+          contexts: contextKeys(sourceText),
+          order: order++,
+          text: normalizeSearchText(sourceText)
+        };
+      })
     );
   }
 
@@ -192,8 +209,29 @@
     return [...aliases].filter(Boolean);
   }
 
+  function canonicalFieldKey(text) {
+    const base = normalizeSearchText(text);
+    const matched = FIELD_ALIAS_RULES.find((rule) =>
+      rule.map(normalizeSearchText).some((alias) => alias && (base.includes(alias) || alias.includes(base)))
+    );
+    return matched ? normalizeSearchText(matched[0]) : base;
+  }
+
+  function contextKeys(text) {
+    const base = normalizeSearchText(text);
+    return CONTEXT_ALIAS_RULES.filter((rule) =>
+      rule.map(normalizeSearchText).some((alias) => alias && base.includes(alias))
+    ).map((rule) => normalizeSearchText(rule[0]));
+  }
+
+  function hasCommonValue(left, right) {
+    return left.some((value) => right.includes(value));
+  }
+
   function scoreMatch(el, item) {
-    const fieldText = normalizeSearchText(getElementText(el));
+    const rawFieldText = getElementText(el);
+    const fieldText = normalizeSearchText(rawFieldText);
+    const fieldContexts = contextKeys(rawFieldText);
     const aliases = fieldAliases(`${item.group} ${item.label}`);
     const labelAliases = fieldAliases(item.label);
     let score = 0;
@@ -213,16 +251,28 @@
       if (["tel", "number"].includes(type) && labelAliases.some((alias) => ["手机号", "手机", "电话", "phone", "mobile", "tel"].includes(alias))) score += 8;
     }
 
+    if (score > 0 && fieldContexts.length && item.contexts.length) {
+      score += hasCommonValue(fieldContexts, item.contexts) ? 14 : -12;
+    }
+
     return Math.min(score, 100);
   }
 
-  function findBestMatch(el) {
-    const candidates = getDataItems()
+  function findBestMatch(el, dataItems, usage) {
+    const candidates = dataItems
       .filter((item) => String(item.value ?? "").trim())
       .map((item) => ({ item, score: scoreMatch(el, item) }))
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => b.score - a.score || a.item.order - b.item.order);
 
-    return candidates[0] || null;
+    const strongest = candidates[0];
+    if (!strongest || strongest.score < 78) return strongest || null;
+
+    const sameKeyCandidates = candidates.filter(
+      (candidate) => candidate.item.key === strongest.item.key && candidate.score >= strongest.score - 18
+    );
+    const unusedCandidate = sameKeyCandidates.find((candidate) => !usage.usedIds.has(candidate.item.id));
+
+    return unusedCandidate || strongest;
   }
 
   function autoFillPage() {
@@ -232,11 +282,13 @@
       }
       return true;
     });
+    const dataItems = getDataItems();
+    const usage = { usedIds: new Set() };
     const matched = [];
     const skipped = [];
 
     fields.forEach((field) => {
-      const best = findBestMatch(field);
+      const best = findBestMatch(field, dataItems, usage);
       if (!best || best.score < 78) {
         skipped.push(field);
         return;
@@ -244,6 +296,7 @@
 
       const filled = fillElement(field, best.item.value);
       if (filled) {
+        usage.usedIds.add(best.item.id);
         matched.push({ field, item: best.item, score: best.score });
       }
     });
