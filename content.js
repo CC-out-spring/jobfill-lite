@@ -21,9 +21,31 @@
   let statusEl;
   let previewBtn;
   let editBtn;
+  let autoBtn;
   let minimizeBtn;
   let shell;
   let saveTimer = null;
+
+  const FIELD_ALIAS_RULES = [
+    ["姓名", "名字", "中文名", "name", "full name", "your name"],
+    ["手机号", "手机", "电话", "mobile", "phone", "tel", "contact number"],
+    ["邮箱", "电子邮箱", "email", "e-mail", "mail"],
+    ["学校", "院校", "大学", "university", "college", "school"],
+    ["院系", "学院", "系别", "department", "faculty"],
+    ["专业", "major", "discipline", "subject"],
+    ["学历", "最高学历", "education", "degree"],
+    ["毕业时间", "毕业日期", "预计毕业时间", "graduation", "expected graduation"],
+    ["出生日期", "生日", "date of birth", "dob", "birth date"],
+    ["性别", "gender", "sex"],
+    ["政治面貌", "political status"],
+    ["实习公司", "实习单位", "company", "intern company", "employer"],
+    ["实习岗位", "岗位", "职位", "position", "title", "intern role"],
+    ["项目名称", "项目", "project name", "project"],
+    ["项目描述", "项目简介", "description", "summary", "project summary"],
+    ["证件号码", "身份证号", "id number", "identity number"],
+    ["地址", "现居住地", "address", "location"],
+    ["英语", "英文", "english", "cet", "toefl", "ielts"]
+  ];
 
   function normalizeText(value) {
     return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -104,6 +126,135 @@
 
   function getFocusableElements() {
     return [...document.querySelectorAll(EDITABLE_SELECTOR)].filter((el) => !inPanel(el) && visible(el));
+  }
+
+  function getDataItems() {
+    return resumeData.flatMap((group) =>
+      group.items.map((item) => ({
+        ...item,
+        group: group.group,
+        text: normalizeSearchText(`${group.group} ${item.label}`)
+      }))
+    );
+  }
+
+  function normalizeSearchText(value) {
+    return String(value ?? "")
+      .toLowerCase()
+      .replace(/[\s:：*＊_\\/\-—–|()[\]{}<>]+/g, "")
+      .trim();
+  }
+
+  function getElementText(el) {
+    const texts = [];
+    const add = (value) => {
+      const text = normalizeText(value);
+      if (text) texts.push(text);
+    };
+
+    add(el.getAttribute("aria-label"));
+    add(el.getAttribute("placeholder"));
+    add(el.getAttribute("name"));
+    add(el.getAttribute("id"));
+    add(el.getAttribute("title"));
+
+    const id = el.getAttribute("id");
+    if (id) {
+      document.querySelectorAll(`label[for="${CSS.escape(id)}"]`).forEach((label) => add(label.textContent));
+    }
+
+    const wrappingLabel = el.closest("label");
+    if (wrappingLabel) add(wrappingLabel.textContent);
+
+    let cursor = el.parentElement;
+    for (let depth = 0; cursor && depth < 4; depth += 1) {
+      [...cursor.children].forEach((child) => {
+        if (child === el || child.contains(el) || inPanel(child)) return;
+        const rect = child.getBoundingClientRect();
+        if (rect.height > 80 || normalizeText(child.textContent).length > 80) return;
+        add(child.textContent);
+      });
+      cursor = cursor.parentElement;
+    }
+
+    return [...new Set(texts)].join(" ");
+  }
+
+  function fieldAliases(label) {
+    const base = normalizeSearchText(label);
+    const aliases = new Set([base]);
+    FIELD_ALIAS_RULES.forEach((rule) => {
+      const normalized = rule.map(normalizeSearchText);
+      if (normalized.some((alias) => base.includes(alias) || alias.includes(base))) {
+        normalized.forEach((alias) => aliases.add(alias));
+      }
+    });
+    return [...aliases].filter(Boolean);
+  }
+
+  function scoreMatch(el, item) {
+    const fieldText = normalizeSearchText(getElementText(el));
+    const aliases = fieldAliases(`${item.group} ${item.label}`);
+    const labelAliases = fieldAliases(item.label);
+    let score = 0;
+
+    if (fieldText) {
+      [...aliases, ...labelAliases].forEach((alias) => {
+        if (!alias) return;
+        if (fieldText === alias) score = Math.max(score, 100);
+        else if (fieldText.includes(alias)) score = Math.max(score, alias.length >= 2 ? 88 : 0);
+        else if (alias.includes(fieldText) && fieldText.length >= 2) score = Math.max(score, 78);
+      });
+    }
+
+    if (el instanceof HTMLInputElement) {
+      const type = el.type;
+      if (type === "email" && labelAliases.some((alias) => ["邮箱", "email", "mail"].includes(alias))) score += 10;
+      if (["tel", "number"].includes(type) && labelAliases.some((alias) => ["手机号", "手机", "电话", "phone", "mobile", "tel"].includes(alias))) score += 8;
+    }
+
+    return Math.min(score, 100);
+  }
+
+  function findBestMatch(el) {
+    const candidates = getDataItems()
+      .filter((item) => String(item.value ?? "").trim())
+      .map((item) => ({ item, score: scoreMatch(el, item) }))
+      .sort((a, b) => b.score - a.score);
+
+    return candidates[0] || null;
+  }
+
+  function autoFillPage() {
+    const fields = getFocusableElements().filter((el) => {
+      if (el instanceof HTMLInputElement && ["button", "submit", "reset", "file", "password"].includes(el.type)) {
+        return false;
+      }
+      return true;
+    });
+    const matched = [];
+    const skipped = [];
+
+    fields.forEach((field) => {
+      const best = findBestMatch(field);
+      if (!best || best.score < 78) {
+        skipped.push(field);
+        return;
+      }
+
+      const filled = fillElement(field, best.item.value);
+      if (filled) {
+        matched.push({ field, item: best.item, score: best.score });
+      }
+    });
+
+    const message = matched.length
+      ? `自动填了 ${matched.length} 项，${skipped.length} 项未匹配`
+      : "没有找到高置信度匹配";
+    statusEl.textContent = message;
+    state.minimized = false;
+    renderItems();
+    statusEl.textContent = message;
   }
 
   function cloneData(data) {
@@ -362,6 +513,7 @@
     statusEl.textContent = `${count} 个字段`;
     previewBtn.textContent = state.privacy ? "◧" : "◨";
     editBtn.textContent = "✎";
+    autoBtn.textContent = "A";
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     root.classList.toggle("jobfill-hidden", state.privacy);
@@ -554,6 +706,7 @@
     statusEl.textContent = `编辑模式 · ${count} 个字段`;
     previewBtn.textContent = state.privacy ? "◧" : "◨";
     editBtn.textContent = "✓";
+    autoBtn.textContent = "A";
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     root.classList.toggle("jobfill-hidden", state.privacy);
@@ -630,6 +783,16 @@
       renderItems();
     });
 
+    autoBtn = document.createElement("button");
+    autoBtn.type = "button";
+    autoBtn.className = "jobfill-icon-btn";
+    autoBtn.title = "自动识别本页并填充";
+    autoBtn.textContent = "A";
+    autoBtn.addEventListener("click", () => {
+      state.minimized = false;
+      autoFillPage();
+    });
+
     const nextBtn = document.createElement("button");
     nextBtn.type = "button";
     nextBtn.className = "jobfill-icon-btn";
@@ -661,7 +824,7 @@
       renderItems();
     });
 
-    header.append(title, previewBtn, editBtn, nextBtn, minimizeBtn);
+    header.append(title, previewBtn, editBtn, autoBtn, nextBtn, minimizeBtn);
 
     const searchWrap = document.createElement("div");
     searchWrap.className = "jobfill-search";
