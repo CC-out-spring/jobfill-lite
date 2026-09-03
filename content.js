@@ -22,6 +22,7 @@
   let previewBtn;
   let editBtn;
   let minimizeBtn;
+  let shell;
   let saveTimer = null;
 
   function normalizeText(value) {
@@ -134,24 +135,36 @@
     });
   }
 
-  function loadUiState() {
-    return new Promise((resolve) => {
-      chrome.storage.local.get(["jobfillPosition"], (result) => {
-        const position = result?.jobfillPosition;
-        if (
-          position &&
-          Number.isFinite(position.left) &&
-          Number.isFinite(position.top)
-        ) {
-          state.position = position;
-        }
-        resolve();
-      });
+  function savePosition(left, top) {
+    chrome.storage.local.set({ jobfillPosition: { left, top } });
+  }
+
+  function saveUiState() {
+    chrome.storage.local.set({
+      jobfillUiState: {
+        minimized: state.minimized,
+        editMode: state.editMode,
+        privacy: state.privacy
+      }
     });
   }
 
-  function savePosition(left, top) {
-    chrome.storage.local.set({ jobfillPosition: { left, top } });
+  function loadUiState() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(["jobfillPosition", "jobfillUiState"], (result) => {
+        const position = result?.jobfillPosition;
+        if (position && Number.isFinite(position.left) && Number.isFinite(position.top)) {
+          state.position = position;
+        }
+
+        const uiState = result?.jobfillUiState || {};
+        if (typeof uiState.minimized === "boolean") state.minimized = uiState.minimized;
+        if (typeof uiState.editMode === "boolean") state.editMode = uiState.editMode;
+        if (typeof uiState.privacy === "boolean") state.privacy = uiState.privacy;
+
+        resolve();
+      });
+    });
   }
 
   function exportData() {
@@ -351,8 +364,9 @@
     editBtn.textContent = "✎";
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
-    panel.classList.toggle("jobfill-hidden", state.privacy);
-    panel.classList.toggle("jobfill-minimized", state.minimized);
+    root.classList.toggle("jobfill-hidden", state.privacy);
+    shell.classList.toggle("jobfill-minimized", state.minimized);
+    saveUiState();
   }
 
   function renderEditor(query) {
@@ -542,8 +556,9 @@
     editBtn.textContent = "✓";
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
-    panel.classList.toggle("jobfill-hidden", state.privacy);
-    panel.classList.toggle("jobfill-minimized", state.minimized);
+    root.classList.toggle("jobfill-hidden", state.privacy);
+    shell.classList.toggle("jobfill-minimized", state.minimized);
+    saveUiState();
   }
 
   function makeActionButton(text) {
@@ -580,6 +595,9 @@
 
     root = document.createElement("div");
     root.id = ROOT_ID;
+
+    shell = document.createElement("div");
+    shell.className = "jobfill-shell";
 
     panel = document.createElement("div");
     panel.className = "jobfill-panel";
@@ -665,7 +683,8 @@
     body.className = "jobfill-body";
 
     panel.append(header, searchWrap, statusEl, body);
-    root.appendChild(panel);
+    shell.appendChild(panel);
+    root.appendChild(shell);
     document.documentElement.appendChild(root);
 
     if (state.position) {
@@ -676,10 +695,10 @@
   }
 
   function enableDragging() {
-    const header = panel.querySelector(".jobfill-header");
+    const dragHandle = shell;
     let drag = null;
 
-    header.addEventListener("pointerdown", (event) => {
+    dragHandle.addEventListener("pointerdown", (event) => {
       if (event.target.closest("button, input, textarea, select")) return;
       const rect = root.getBoundingClientRect();
       drag = {
@@ -690,7 +709,7 @@
         width: rect.width,
         height: rect.height
       };
-      header.setPointerCapture(event.pointerId);
+      dragHandle.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
 
@@ -708,7 +727,22 @@
     window.addEventListener("pointerup", () => {
       if (drag) {
         const rect = root.getBoundingClientRect();
-        savePosition(Math.round(rect.left), Math.round(rect.top));
+        const isNearLeft = rect.left < 100;
+        const isNearRight = window.innerWidth - rect.right < 100;
+        const isNearTop = rect.top < 100;
+        const isNearBottom = window.innerHeight - rect.bottom < 100;
+        let nextLeft = rect.left;
+        let nextTop = rect.top;
+
+        if (isNearLeft) nextLeft = 8;
+        else if (isNearRight) nextLeft = Math.max(8, window.innerWidth - rect.width - 8);
+
+        if (isNearTop) nextTop = 8;
+        else if (isNearBottom) nextTop = Math.max(8, window.innerHeight - rect.height - 8);
+
+        root.style.left = `${Math.round(nextLeft)}px`;
+        root.style.top = `${Math.round(nextTop)}px`;
+        savePosition(Math.round(nextLeft), Math.round(nextTop));
       }
       drag = null;
     });
