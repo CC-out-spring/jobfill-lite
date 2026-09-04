@@ -22,6 +22,7 @@
   let previewBtn;
   let editBtn;
   let autoBtn;
+  let collectBtn;
   let minimizeBtn;
   let shell;
   let saveTimer = null;
@@ -138,6 +139,12 @@
     return [...document.querySelectorAll(EDITABLE_SELECTOR)].filter((el) => !inPanel(el) && visible(el));
   }
 
+  function getCollectableElements() {
+    return [...document.querySelectorAll('input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled]), [contenteditable="true"]')]
+      .filter((el) => !inPanel(el) && visible(el))
+      .filter((el) => !(el instanceof HTMLInputElement && ["button", "submit", "reset", "file"].includes(el.type)));
+  }
+
   function getDataItems() {
     let order = 0;
     return resumeData.flatMap((group) =>
@@ -195,6 +202,99 @@
     }
 
     return [...new Set(texts)].join(" ");
+  }
+
+  function extractElementValue(el) {
+    if (el instanceof HTMLInputElement) {
+      if (["button", "submit", "reset", "file", "password", "hidden"].includes(el.type)) return "";
+      if (el.type === "checkbox" || el.type === "radio") {
+        if (!el.checked) return "";
+        const label = normalizeText(getElementText(el)) || normalizeText(el.value);
+        return label || "已勾选";
+      }
+      return String(el.value ?? "").replace(/\r\n/g, "\n").trim();
+    }
+
+    if (el instanceof HTMLTextAreaElement) {
+      return String(el.value ?? "").replace(/\r\n/g, "\n").trim();
+    }
+
+    if (el.tagName === "SELECT") {
+      const text = normalizeText(el.selectedOptions?.[0]?.textContent || "");
+      const value = normalizeText(el.value || "");
+      return text || value;
+    }
+
+    if (el.isContentEditable) {
+      return normalizeText(el.innerText || el.textContent || "");
+    }
+
+    return "";
+  }
+
+  function inferCollectionLabel(el, index) {
+    const candidates = [
+      getElementText(el),
+      el.getAttribute("placeholder"),
+      el.getAttribute("aria-label"),
+      el.getAttribute("name"),
+      el.getAttribute("id"),
+      el.getAttribute("title")
+    ];
+    const found = candidates.map(normalizeText).find(Boolean);
+    return found || `字段 ${index + 1}`;
+  }
+
+  function formatCaptureStamp(date) {
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    const hh = String(date.getHours()).padStart(2, "0");
+    const mi = String(date.getMinutes()).padStart(2, "0");
+    return `${mm}-${dd} ${hh}:${mi}`;
+  }
+
+  function collectCurrentPageFields() {
+    const elements = getCollectableElements();
+    const seen = new Map();
+    const items = [];
+
+    elements.forEach((el, index) => {
+      const value = extractElementValue(el);
+      if (!value) return;
+
+      const rawLabel = normalizeText(inferCollectionLabel(el, index));
+      const currentCount = seen.get(rawLabel) || 0;
+      seen.set(rawLabel, currentCount + 1);
+      const label = currentCount === 0 ? rawLabel : `${rawLabel} ${currentCount + 1}`;
+
+      items.push({
+        id: makeId(),
+        group: "页面采集",
+        label,
+        value
+      });
+    });
+
+    return items;
+  }
+
+  async function captureCurrentPage() {
+    const items = collectCurrentPageFields();
+    if (!items.length) {
+      statusEl.textContent = "没有采集到已填写内容";
+      return;
+    }
+
+    const groupName = `页面采集 ${formatCaptureStamp(new Date())}`;
+    resumeData.unshift({
+      group: groupName,
+      items: items.map((item) => ({ ...item, group: groupName }))
+    });
+    state.editMode = true;
+    state.minimized = false;
+    await saveData("已采集并保存");
+    renderItems();
+    statusEl.textContent = `已采集 ${items.length} 项`;
   }
 
   function fieldAliases(label) {
@@ -567,6 +667,7 @@
     previewBtn.textContent = state.privacy ? "◧" : "◨";
     editBtn.textContent = "✎";
     autoBtn.textContent = "A";
+    collectBtn.textContent = "采";
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     root.classList.toggle("jobfill-hidden", state.privacy);
@@ -760,6 +861,7 @@
     previewBtn.textContent = state.privacy ? "◧" : "◨";
     editBtn.textContent = "✓";
     autoBtn.textContent = "A";
+    collectBtn.textContent = "采";
     minimizeBtn.textContent = state.minimized ? "+" : "–";
     minimizeBtn.title = state.minimized ? "展开面板" : "收起面板";
     root.classList.toggle("jobfill-hidden", state.privacy);
@@ -846,6 +948,15 @@
       autoFillPage();
     });
 
+    collectBtn = document.createElement("button");
+    collectBtn.type = "button";
+    collectBtn.className = "jobfill-icon-btn";
+    collectBtn.title = "采集当前页面已填写内容";
+    collectBtn.textContent = "采";
+    collectBtn.addEventListener("click", () => {
+      captureCurrentPage();
+    });
+
     const nextBtn = document.createElement("button");
     nextBtn.type = "button";
     nextBtn.className = "jobfill-icon-btn";
@@ -877,7 +988,7 @@
       renderItems();
     });
 
-    header.append(title, previewBtn, editBtn, autoBtn, nextBtn, minimizeBtn);
+    header.append(title, previewBtn, editBtn, autoBtn, collectBtn, nextBtn, minimizeBtn);
 
     const searchWrap = document.createElement("div");
     searchWrap.className = "jobfill-search";
